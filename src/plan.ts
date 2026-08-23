@@ -3,10 +3,10 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import type { MemoryInput } from "./nmem.ts";
-import type { ImportOptions } from "./options.ts";
+import type { ImportMode, ImportOptions } from "./options.ts";
 
 export const SAVED_PLAN_RELATIVE_PATH = ".tiddlynmem/plan.json";
-const SAVED_PLAN_FORMAT_VERSION = 1;
+const SAVED_PLAN_FORMAT_VERSION = 2;
 
 interface PlannedMemory {
   fingerprint: string;
@@ -18,6 +18,7 @@ interface SavedPlanOptions {
   includeSensitive: boolean;
   jobs: number;
   limit: number | null;
+  mode: ImportMode;
   spaceId: string;
   tag: string;
   wikiId: string;
@@ -97,6 +98,7 @@ function isSavedPlan(value: unknown): value is SavedPlan {
     typeof options.includeSensitive === "boolean" &&
     isPositiveInteger(options.jobs) &&
     (options.limit === null || isPositiveInteger(options.limit)) &&
+    (options.mode === "sync" || options.mode === "migrate") &&
     typeof options.spaceId === "string" &&
     typeof options.tag === "string" &&
     typeof options.wikiId === "string" &&
@@ -134,6 +136,7 @@ export async function savePlan(input: SavePlanInput): Promise<void> {
       includeSensitive: options.includeSensitive,
       jobs: options.jobs,
       limit: Number.isFinite(options.limit) ? options.limit : null,
+      mode: options.mode,
       spaceId: options.spaceId,
       tag: options.tag,
       wikiId: options.wikiId,

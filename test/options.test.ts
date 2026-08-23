@@ -10,6 +10,7 @@ test("parseArgs uses safe defaults", () => {
     includeSensitive: false,
     jobs: 4,
     limit: Number.POSITIVE_INFINITY,
+    mode: "sync",
     spaceId: "default",
     tag: "",
     wikiId: "",
@@ -36,6 +37,8 @@ test("parseArgs accepts plan controls", () => {
       "2",
       "--limit",
       "10",
+      "--mode",
+      "migrate",
       "--space-id",
       "personal",
       "--tag",
@@ -49,6 +52,7 @@ test("parseArgs accepts plan controls", () => {
       includeSensitive: true,
       jobs: 2,
       limit: 10,
+      mode: "migrate",
       spaceId: "personal",
       tag: "Project Alpha",
       wikiId: "personal-notes",
@@ -62,6 +66,8 @@ test("parseArgs rejects invalid numbers and unknown options", () => {
   assert.throws(() => parseArgs(["--tag"]), /requires a value/u);
   assert.throws(() => parseArgs(["--api-url"]), /requires a value/u);
   assert.throws(() => parseArgs(["--wiki-id"]), /requires a value/u);
+  assert.throws(() => parseArgs(["--mode"]), /requires a value/u);
+  assert.throws(() => parseArgs(["--mode", "copy"]), /sync or migrate/u);
   assert.throws(() => parseArgs(["plan", "apply"]), /Only one command/u);
   assert.throws(() => parseArgs(["--apply"]), /Unknown option/u);
   assert.throws(() => parseArgs(["--allow-remote"]), /Unknown option/u);
@@ -87,6 +93,7 @@ test("parseArgs reserves planning options for plan", () => {
     ["apply", "--include-sensitive"],
     ["apply", "--jobs", "2"],
     ["apply", "--limit", "10"],
+    ["apply", "--mode", "migrate"],
     ["apply", "--space-id", "personal"],
     ["apply", "--tag", "Project Alpha"],
     ["apply", "--wiki-id", "personal-notes"],

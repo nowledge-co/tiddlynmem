@@ -25,6 +25,10 @@ interface TiddlyWikiRuntime {
     files: Record<string, TiddlerFileInfo | undefined>;
   };
   utils: {
+    deleteTiddlerFile(
+      fileInfo: TiddlerFileInfo,
+      callback: (error?: Error | null) => void,
+    ): void;
     saveTiddlerToFile(
       tiddler: TiddlyWikiTiddler,
       fileInfo: TiddlerFileInfo,
@@ -47,6 +51,16 @@ interface SyncRequest {
   records: SyncRecord[];
   tag: string;
   type: "sync";
+}
+
+interface DeleteRecord {
+  sourceFileDigest: string;
+  title: string;
+}
+
+interface DeleteRequest {
+  records: DeleteRecord[];
+  type: "delete";
 }
 
 const require = createRequire(import.meta.url);
@@ -95,6 +109,30 @@ function isSyncRequest(message: unknown): message is SyncRequest {
   );
 }
 
+function isDeleteRecord(value: unknown): value is DeleteRecord {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "sourceFileDigest" in value &&
+    typeof value.sourceFileDigest === "string" &&
+    /^sha256:[0-9a-f]{64}$/u.test(value.sourceFileDigest) &&
+    "title" in value &&
+    typeof value.title === "string"
+  );
+}
+
+function isDeleteRequest(message: unknown): message is DeleteRequest {
+  return (
+    typeof message === "object" &&
+    message !== null &&
+    "type" in message &&
+    message.type === "delete" &&
+    "records" in message &&
+    Array.isArray(message.records) &&
+    message.records.every(isDeleteRecord)
+  );
+}
+
 function saveTiddler(
   tw: TiddlyWikiRuntime,
   tiddler: TiddlyWikiTiddler,
@@ -102,6 +140,21 @@ function saveTiddler(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     tw.utils.saveTiddlerToFile(tiddler, fileInfo, (error) => {
+      if (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+function deleteTiddlerFile(
+  tw: TiddlyWikiRuntime,
+  fileInfo: TiddlerFileInfo,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tw.utils.deleteTiddlerFile(fileInfo, (error) => {
       if (error) {
         reject(error instanceof Error ? error : new Error(String(error)));
       } else {
@@ -186,22 +239,77 @@ async function recordSyncState(
   process.disconnect();
 }
 
+async function deleteSourceTiddlers(
+  tw: TiddlyWikiRuntime,
+  request: DeleteRequest,
+): Promise<void> {
+  for (const record of request.records) {
+    const { sourceFileDigest: expectedFileDigest, title } = record;
+    try {
+      const tiddler = tw.wiki.getTiddler(title);
+      if (!tiddler) {
+        throw new Error("The source tiddler no longer exists.");
+      }
+
+      const fileInfo = tw.boot.files[title];
+      if (!fileInfo) {
+        throw new Error("The source tiddler is not backed by a deletable file.");
+      }
+      if (
+        !fileInfo.hasMetaFile &&
+        fileInfo.type !== "application/x-tiddler"
+      ) {
+        throw new Error(
+          `Refusing to delete shared source file type ${fileInfo.type}.`,
+        );
+      }
+      if ((await sourceFileDigest(fileInfo)) !== expectedFileDigest) {
+        throw new Error(
+          "The source file changed after apply scanning. Run plan again before retrying.",
+        );
+      }
+
+      await deleteTiddlerFile(tw, fileInfo);
+      await send({ status: "deleted", title, type: "result" });
+    } catch (error) {
+      await send({
+        error: error instanceof Error ? error.message : String(error),
+        status: "failed",
+        title,
+        type: "result",
+      });
+    }
+  }
+
+  await send({ type: "done" });
+  process.disconnect();
+}
+
 const tw = TiddlyWiki();
 tw.boot.argv = [wikiPath, "--output", tmpdir()];
 tw.boot.boot(() => {
   process.once("message", (message) => {
-    if (!isSyncRequest(message)) {
-      process.stderr.write("The TiddlyWiki sync request is invalid.\n");
-      process.exit(1);
+    if (isSyncRequest(message)) {
+      void recordSyncState(tw, message).catch((error) => {
+        process.stderr.write(
+          `${error instanceof Error ? error.message : String(error)}\n`,
+        );
+        process.exit(1);
+      });
+      return;
+    }
+    if (isDeleteRequest(message)) {
+      void deleteSourceTiddlers(tw, message).catch((error) => {
+        process.stderr.write(
+          `${error instanceof Error ? error.message : String(error)}\n`,
+        );
+        process.exit(1);
+      });
       return;
     }
 
-    void recordSyncState(tw, message).catch((error) => {
-      process.stderr.write(
-        `${error instanceof Error ? error.message : String(error)}\n`,
-      );
-      process.exit(1);
-    });
+    process.stderr.write("The TiddlyWiki source mutation request is invalid.\n");
+    process.exit(1);
   });
   void send({ type: "ready" }).catch((error) => {
     process.stderr.write(`${error.message}\n`);

@@ -1,4 +1,5 @@
 export type ImportCommand = "apply" | "plan";
+export type ImportMode = "migrate" | "sync";
 
 export interface ImportOptions {
   apiUrl: string;
@@ -6,6 +7,7 @@ export interface ImportOptions {
   includeSensitive: boolean;
   jobs: number;
   limit: number;
+  mode: ImportMode;
   spaceId: string;
   tag: string;
   wikiId: string;
@@ -26,6 +28,7 @@ export function parseArgs(args: string[]): ImportOptions {
     includeSensitive: false,
     jobs: 4,
     limit: Number.POSITIVE_INFINITY,
+    mode: "sync",
     spaceId: "default",
     tag: "",
     wikiId: "",
@@ -74,6 +77,16 @@ export function parseArgs(args: string[]): ImportOptions {
         planOptionSpecified = true;
         const value = takeValue(index, option);
         options.limit = positiveInteger(value, option);
+        index += 1;
+        break;
+      }
+      case "--mode": {
+        planOptionSpecified = true;
+        const value = takeValue(index, option);
+        if (value !== "sync" && value !== "migrate") {
+          throw new Error("--mode must be sync or migrate.");
+        }
+        options.mode = value;
         index += 1;
         break;
       }

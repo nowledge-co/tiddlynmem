@@ -28,7 +28,7 @@ import {
   validateMemoryInput,
   type MemoryInput,
 } from "./nmem.ts";
-import { parseArgs } from "./options.ts";
+import { parseArgs, type ImportMode } from "./options.ts";
 import {
   assertSavedPlanMatches,
   discardSavedPlan,
@@ -39,9 +39,17 @@ import {
   SAVED_PLAN_RELATIVE_PATH,
   type SavedPlan,
 } from "./plan.ts";
-import { loadWiki, recordWikiSync } from "./tiddlywiki.ts";
+import {
+  deleteWikiTiddlers,
+  loadWiki,
+  recordWikiSync,
+} from "./tiddlywiki.ts";
 
-type SkipReason = Exclude<TiddlerClassification, "ready"> | "unchanged";
+type SkipReason =
+  | Exclude<TiddlerClassification, "ready">
+  | "conversion"
+  | "render"
+  | "unchanged";
 type SyncAction = "create" | "migrate" | "update";
 const require = createRequire(import.meta.url);
 const packageVersion = (require("../package.json") as { version: string }).version;
@@ -56,6 +64,7 @@ interface MemoryCandidate extends MemoryInput {
 interface ResultEntry {
   error?: string;
   id?: string;
+  sourceDeletion?: "deleted" | "failed";
   sourceWiki: string;
   sourceSync?: "already-current" | "failed" | "written";
   status: string;
@@ -65,6 +74,7 @@ interface ResultEntry {
 }
 
 interface ImportSummary {
+  deleted: number;
   failed: number;
   imported: number;
   ready: number;
@@ -90,6 +100,7 @@ Commands:
 Plan options:
   --limit <count>         Stop after this many create, migrate, or update actions.
   --jobs <count>          Set concurrent Memory API writes. Default: 4.
+  --mode <mode>           Select sync or migrate source handling. Default: sync.
   --space-id <id>         Set the Nowledge Mem space. Default: default.
   --tag <tag>             Only process tiddlers with this exact tag.
   --wiki-id <id>          Set a stable, portable identity for this Wiki.
@@ -115,14 +126,17 @@ async function assertWikiPath(wikiPath: string): Promise<void> {
 
 function newSummary(): ImportSummary {
   return {
+    deleted: 0,
     failed: 0,
     imported: 0,
     ready: 0,
     scanned: 0,
     skipped: {
+      conversion: 0,
       draft: 0,
       empty: 0,
       imported: 0,
+      render: 0,
       sensitive: 0,
       system: 0,
       unchanged: 0,
@@ -217,6 +231,11 @@ function formatResultEntries(entries: ResultEntry[]): string {
     if (entry.sourceSync) {
       lines.push(`  Source sync: ${sanitizeTerminalText(entry.sourceSync)}`);
     }
+    if (entry.sourceDeletion) {
+      lines.push(
+        `  Source deletion: ${sanitizeTerminalText(entry.sourceDeletion)}`,
+      );
+    }
     if (entry.warnings && entry.warnings.length > 0) {
       lines.push(
         `  Warnings: ${entry.warnings.map(sanitizeTerminalText).join("; ")}`,
@@ -231,6 +250,7 @@ function formatResultEntries(entries: ResultEntry[]): string {
 
 function writeResultSummary(
   command: "apply" | "plan",
+  mode: ImportMode,
   entries: ResultEntry[],
   summary: ImportSummary,
   savedPlanWritten = false,
@@ -238,12 +258,15 @@ function writeResultSummary(
   process.stdout.write(
     [
       `Mode: ${command}`,
+      `Source mode: ${mode}`,
       formatResultEntries(entries),
       `Scanned: ${summary.scanned}`,
       `Ready: ${summary.ready}`,
       formatSkippedSummary(summary.skipped),
       `Imported: ${summary.imported}`,
-      `Recorded: ${summary.recorded}`,
+      ...(mode === "migrate"
+        ? [`Deleted: ${summary.deleted}`]
+        : [`Recorded: ${summary.recorded}`]),
       `Failed: ${summary.failed}`,
       `Warnings: ${summary.warnings}`,
       ...(savedPlanWritten
@@ -338,11 +361,11 @@ async function main(): Promise<void> {
         continue;
       }
       if (tiddler.renderError) {
-        summary.failed += 1;
+        summary.skipped.render += 1;
         entries.push({
           error: tiddler.renderError,
           sourceWiki,
-          status: "failed:render",
+          status: "skipped:render",
           tags: sourceTags,
           title: tiddler.title,
         });
@@ -359,11 +382,11 @@ async function main(): Promise<void> {
           : sanitizeMarkdownMedia(sourceBody);
       const body = markdownMedia.markdown;
       if (!body) {
-        summary.failed += 1;
+        summary.skipped.conversion += 1;
         entries.push({
           error: "The converted Markdown is empty.",
           sourceWiki,
-          status: "failed:conversion",
+          status: "skipped:conversion",
           tags: sourceTags,
           title: tiddler.title,
         });
@@ -464,6 +487,7 @@ async function main(): Promise<void> {
       scannedMemories.push(memory);
       const hasMarker = sourceTags.includes(NOWLEDGE_MEM_TAG);
       const unchanged =
+        options.mode === "sync" &&
         hasMarker &&
         Boolean(tiddler.nmemUri) &&
         tiddler.nmemDigest === digest;
@@ -538,7 +562,7 @@ async function main(): Promise<void> {
       }
       assertSavedPlanMatches(savedPlan!, scannedMemories);
     } catch (error) {
-      writeResultSummary(options.command, entries, summary);
+      writeResultSummary(options.command, options.mode, entries, summary);
       throw error;
     }
   } else if (summary.failed === 0) {
@@ -605,41 +629,90 @@ async function main(): Promise<void> {
       }
     });
 
-    if (importedRecords.length > 0) {
+    if (
+      options.mode === "migrate" &&
+      importedRecords.length > 0 &&
+      summary.failed > 0
+    ) {
       process.stdout.write(
-        `Recording sync state for ${importedRecords.length} source tiddlers...\n`,
+        "Source deletion deferred because not every planned Memory write succeeded.\n",
       );
+    } else if (importedRecords.length > 0) {
       const entriesByTitle = new Map(
         memories.map((memory) => [memory.title, entriesById.get(memory.id)]),
       );
-      try {
-        const syncResults = await recordWikiSync(
-          wikiPaths[0]!,
-          importedRecords,
+      if (options.mode === "migrate") {
+        process.stdout.write(
+          `Deleting ${importedRecords.length} source tiddlers...\n`,
         );
-        for (const result of syncResults) {
-          const entry = entriesByTitle.get(result.title);
-          if (!entry) {
-            throw new Error(`Missing result entry for tiddler ${result.title}.`);
+        try {
+          const deleteResults = await deleteWikiTiddlers(
+            wikiPaths[0]!,
+            importedRecords,
+          );
+          for (const result of deleteResults) {
+            const entry = entriesByTitle.get(result.title);
+            if (!entry) {
+              throw new Error(
+                `Missing result entry for tiddler ${result.title}.`,
+              );
+            }
+            entry.sourceDeletion = result.status;
+            if (result.status === "failed") {
+              entry.status = "imported:delete-failed";
+              entry.error = `Memory imported, but source deletion failed: ${result.error ?? "Unknown error"}`;
+              summary.failed += 1;
+            } else {
+              summary.deleted += 1;
+            }
           }
-          entry.sourceSync = result.status;
-          if (result.status === "failed") {
-            entry.status = "imported:writeback-failed";
-            entry.error = `Memory imported, but source sync writeback failed: ${result.error ?? "Unknown error"}`;
-            summary.failed += 1;
-          } else {
-            summary.recorded += 1;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          for (const record of importedRecords) {
+            const entry = entriesByTitle.get(record.title);
+            if (entry && !entry.sourceDeletion) {
+              entry.sourceDeletion = "failed";
+              entry.status = "imported:delete-failed";
+              entry.error = `Memory imported, but source deletion failed: ${message}`;
+              summary.failed += 1;
+            }
           }
         }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        for (const record of importedRecords) {
-          const entry = entriesByTitle.get(record.title);
-          if (entry && !entry.sourceSync) {
-            entry.sourceSync = "failed";
-            entry.status = "imported:writeback-failed";
-            entry.error = `Memory imported, but source sync writeback failed: ${message}`;
-            summary.failed += 1;
+      } else {
+        process.stdout.write(
+          `Recording sync state for ${importedRecords.length} source tiddlers...\n`,
+        );
+        try {
+          const syncResults = await recordWikiSync(
+            wikiPaths[0]!,
+            importedRecords,
+          );
+          for (const result of syncResults) {
+            const entry = entriesByTitle.get(result.title);
+            if (!entry) {
+              throw new Error(
+                `Missing result entry for tiddler ${result.title}.`,
+              );
+            }
+            entry.sourceSync = result.status;
+            if (result.status === "failed") {
+              entry.status = "imported:writeback-failed";
+              entry.error = `Memory imported, but source sync writeback failed: ${result.error ?? "Unknown error"}`;
+              summary.failed += 1;
+            } else {
+              summary.recorded += 1;
+            }
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          for (const record of importedRecords) {
+            const entry = entriesByTitle.get(record.title);
+            if (entry && !entry.sourceSync) {
+              entry.sourceSync = "failed";
+              entry.status = "imported:writeback-failed";
+              entry.error = `Memory imported, but source sync writeback failed: ${message}`;
+              summary.failed += 1;
+            }
           }
         }
       }
@@ -648,6 +721,7 @@ async function main(): Promise<void> {
 
   writeResultSummary(
     options.command,
+    options.mode,
     entries,
     summary,
     !applying && summary.failed === 0,
