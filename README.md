@@ -1,7 +1,7 @@
 # tiddlynmem
 
 [![npm version](https://img.shields.io/npm/v/tiddlynmem.svg)](https://www.npmjs.com/package/tiddlynmem)
-[![CI](https://github.com/ThaddeusJiang/tiddlynmem/actions/workflows/ci.yml/badge.svg)](https://github.com/ThaddeusJiang/tiddlynmem/actions/workflows/ci.yml)
+[![CI](https://github.com/nowledge-co/tiddlynmem/actions/workflows/ci.yml/badge.svg)](https://github.com/nowledge-co/tiddlynmem/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/node/v/tiddlynmem.svg)](https://www.npmjs.com/package/tiddlynmem)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
@@ -10,7 +10,7 @@ Import TiddlyWiki tiddlers into [Nowledge Mem](https://mem.nowledge.co/) as AI m
 ## Agent Usage
 
 ```text
-Read https://github.com/ThaddeusJiang/tiddlynmem/blob/main/README.md
+Read https://github.com/nowledge-co/tiddlynmem/blob/main/README.md
 and import the TiddlyWiki in the current directory into Nowledge Mem.
 ```
 
@@ -106,7 +106,7 @@ For `imported:writeback-failed`, the Memory was created or updated but its sourc
 ## Development
 
 ```bash
-git clone https://github.com/ThaddeusJiang/tiddlynmem.git
+git clone https://github.com/nowledge-co/tiddlynmem.git
 cd tiddlynmem
 mise trust && mise install
 npm ci

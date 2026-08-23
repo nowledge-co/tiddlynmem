@@ -1,6 +1,6 @@
 {
   "name": "tiddlynmem",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Import TiddlyWiki tiddlers into Nowledge Mem as AI memories.",
   "author": {
     "name": "Thaddeus Jiang",
@@ -27,12 +27,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ThaddeusJiang/tiddlynmem.git"
+    "url": "git+https://github.com/nowledge-co/tiddlynmem.git"
   },
   "bugs": {
-    "url": "https://github.com/ThaddeusJiang/tiddlynmem/issues"
+    "url": "https://github.com/nowledge-co/tiddlynmem/issues"
   },
-  "homepage": "https://github.com/ThaddeusJiang/tiddlynmem#readme",
+  "homepage": "https://github.com/nowledge-co/tiddlynmem#readme",
   "packageManager": "npm@11.13.0",
   "engines": {
     "node": ">=24.16.0"
