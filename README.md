@@ -40,6 +40,9 @@ The default source mode is `sync`. It keeps each source tiddler and records its 
 
 To move tiddlers out of the Wiki, create a migrate-mode plan:
 
+> [!CAUTION]
+> `plan --mode migrate` is non-destructive, but the subsequent bare `apply` permanently deletes each successfully imported source tiddler. Commit or back up your Wiki before applying the plan. tiddlynmem does not provide an undo operation.
+
 ```bash
 npx tiddlynmem plan --mode migrate
 ```
