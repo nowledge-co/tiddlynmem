@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added opt-in `migrate` source mode, which deletes successfully imported standalone source tiddlers after snapshot verification while keeping `sync` as the default.
+
+### Fixed
+
+- Prevented individual tiddler rendering errors and empty conversion results from blocking otherwise valid plans and applies; affected sources are now reported as skipped and retained.
+
 ## [0.2.0] - 2026-08-23
 
 ### Added
@@ -14,12 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added one-way incremental synchronization from TiddlyWiki to Nowledge Mem. Successful upserts now write `nmem-uri` and a self-describing `nmem-digest: sha256:<hex>` alongside `$:/NowledgeMem`.
 - Added reviewed create, update, and legacy-marker migration actions while unchanged synced tiddlers are skipped.
 - Preserved the stored Memory ID across tiddler edits and title changes.
-- Added opt-in `migrate` source mode, which deletes successfully imported standalone source tiddlers after snapshot verification while keeping `sync` as the default.
 
 ### Fixed
 
 - Prevented sync-state writeback from overwriting concurrent source edits, and printed exact per-tiddler scan failures before apply rejects plan drift.
-- Prevented individual tiddler rendering errors and empty conversion results from blocking otherwise valid plans and applies; affected sources are now reported as skipped and retained.
 
 ## [0.1.0] - 2026-08-15
 
