@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  cp,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -12,6 +19,7 @@ import {
   type TiddlerRecord,
 } from "../src/core.ts";
 import {
+  deleteWikiTiddlers,
   loadWiki,
   recordWikiSync,
   tiddlyWikiWorkerEnvironment,
@@ -322,4 +330,131 @@ test("recordWikiSync preserves a Markdown file with a metadata sidecar", async (
   const metadata = await readFile(metadataPath, "utf8");
   assert.match(metadata, new RegExp(`^${NMEM_URI_FIELD}: `, "mu"));
   assert.match(metadata, new RegExp(`^${NMEM_DIGEST_FIELD}: sha256:`, "mu"));
+});
+
+test("deleteWikiTiddlers deletes an unchanged standalone tiddler", async (t) => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "tiddlynmem-test-"));
+  const wikiPath = resolve(temporaryRoot, "wiki");
+  const tiddlerPath = resolve(wikiPath, "tiddlers", "Multiline.tid");
+  await cp(fixture, wikiPath, { recursive: true });
+  t.after(async () => {
+    await rm(temporaryRoot, { force: true, recursive: true });
+  });
+
+  const before = await loadWiki(wikiPath);
+  const record = before.records.find((item) => item.title === "Multiline");
+  assert.ok(record);
+
+  const result = await deleteWikiTiddlers(wikiPath, [
+    { ...sourceFileSnapshot(record), title: record.title },
+  ]);
+
+  assert.deepEqual(result, [{ status: "deleted", title: "Multiline" }]);
+  await assert.rejects(access(tiddlerPath));
+  const after = await loadWiki(wikiPath);
+  assert.equal(
+    after.records.some((item) => item.title === "Multiline"),
+    false,
+  );
+});
+
+test("deleteWikiTiddlers deletes a body file and its metadata sidecar", async (t) => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "tiddlynmem-test-"));
+  const wikiPath = resolve(temporaryRoot, "wiki");
+  const markdownPath = resolve(wikiPath, "tiddlers", "Markdown.md");
+  const metadataPath = `${markdownPath}.meta`;
+  await cp(fixture, wikiPath, { recursive: true });
+  await writeFile(markdownPath, "# Heading\n", "utf8");
+  await writeFile(
+    metadataPath,
+    "title: Markdown\ntags: Original\ntype: text/markdown\n",
+    "utf8",
+  );
+  t.after(async () => {
+    await rm(temporaryRoot, { force: true, recursive: true });
+  });
+
+  const before = await loadWiki(wikiPath);
+  const record = before.records.find((item) => item.title === "Markdown");
+  assert.ok(record);
+
+  const result = await deleteWikiTiddlers(wikiPath, [
+    { ...sourceFileSnapshot(record), title: record.title },
+  ]);
+
+  assert.deepEqual(result, [{ status: "deleted", title: "Markdown" }]);
+  await assert.rejects(access(markdownPath));
+  await assert.rejects(access(metadataPath));
+});
+
+test("deleteWikiTiddlers rejects a changed source without deleting it", async (t) => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "tiddlynmem-test-"));
+  const wikiPath = resolve(temporaryRoot, "wiki");
+  const tiddlerPath = resolve(wikiPath, "tiddlers", "Multiline.tid");
+  await cp(fixture, wikiPath, { recursive: true });
+  t.after(async () => {
+    await rm(temporaryRoot, { force: true, recursive: true });
+  });
+
+  const before = await loadWiki(wikiPath);
+  const record = before.records.find((item) => item.title === "Multiline");
+  assert.ok(record);
+  await writeFile(
+    tiddlerPath,
+    (await readFile(tiddlerPath, "utf8")).replace(
+      "First line.",
+      "Concurrent edit.",
+    ),
+    "utf8",
+  );
+
+  const result = await deleteWikiTiddlers(wikiPath, [
+    { ...sourceFileSnapshot(record), title: record.title },
+  ]);
+
+  assert.deepEqual(result, [
+    {
+      error:
+        "The source file changed after apply scanning. Run plan again before retrying.",
+      status: "failed",
+      title: "Multiline",
+    },
+  ]);
+  assert.match(await readFile(tiddlerPath, "utf8"), /Concurrent edit\./u);
+});
+
+test("deleteWikiTiddlers refuses to delete a shared source file", async (t) => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "tiddlynmem-test-"));
+  const wikiPath = resolve(temporaryRoot, "wiki");
+  const jsonPath = resolve(wikiPath, "tiddlers", "Shared.json");
+  const json = `${JSON.stringify(
+    [
+      { text: "First body", title: "First", type: "text/plain" },
+      { text: "Second body", title: "Second", type: "text/plain" },
+    ],
+    null,
+    2,
+  )}\n`;
+  await cp(fixture, wikiPath, { recursive: true });
+  await writeFile(jsonPath, json, "utf8");
+  t.after(async () => {
+    await rm(temporaryRoot, { force: true, recursive: true });
+  });
+
+  const before = await loadWiki(wikiPath);
+  const first = before.records.find((record) => record.title === "First");
+  assert.ok(first);
+
+  const result = await deleteWikiTiddlers(wikiPath, [
+    { ...sourceFileSnapshot(first), title: first.title },
+  ]);
+
+  assert.deepEqual(result, [
+    {
+      error: "Refusing to delete shared source file type application/json.",
+      status: "failed",
+      title: "First",
+    },
+  ]);
+  assert.equal(await readFile(jsonPath, "utf8"), json);
 });

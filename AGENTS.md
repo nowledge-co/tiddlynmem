@@ -14,10 +14,10 @@ This file is the development and contribution contract for AI coding agents work
 - The command must be run from a directory containing a readable `tiddlywiki.info`.
 - Do not restore `--wiki`, hardcoded Wiki names, parent-directory scans, or sibling-directory scans.
 - The CLI uses Terraform-style saved-plan semantics. Omitting the command defaults to `plan`; `plan` accepts all selection and execution options, while `apply` accepts no plan options and executes `.tiddlynmem/plan.json`.
-- Only the `apply` command may write to Nowledge Mem or modify source tiddlers. `plan` may only replace its local, body-free saved-plan artifact. After a specific Memory write succeeds, record `$:/NowledgeMem`, `nmem-uri`, and `nmem-digest` on that source tiddler without changing its text, source `modified` value, or duplicating the tag.
-- Treat `$:/NowledgeMem` as the historical imported marker and `nmem-uri` plus `nmem-digest` as the current synchronization state. The self-describing `sha256:<hex>` digest covers the Memory payload, selected API URL, and space. Convert managed tiddlers during scans: classify matching digests as `skipped:unchanged`, changed digests as `ready:update`, and marker-only or incomplete valid state as `ready:migrate`. Never write an unchanged Memory.
+- Only the `apply` command may write to Nowledge Mem or modify source tiddlers. `plan` may only replace its local, body-free saved-plan artifact. The saved source mode is `sync` by default. In sync mode, after a specific Memory write succeeds, record `$:/NowledgeMem`, `nmem-uri`, and `nmem-digest` on that source tiddler without changing its text, source `modified` value, or duplicating the tag. In migrate mode, delete imported source tiddlers only after every planned Memory write succeeds and immediately revalidate each source-file snapshot before deletion.
+- Treat `$:/NowledgeMem` as the historical imported marker and `nmem-uri` plus `nmem-digest` as the current synchronization state. The self-describing `sha256:<hex>` digest covers the Memory payload, selected API URL, and space. In sync mode, classify matching digests as `skipped:unchanged`, changed digests as `ready:update`, and marker-only or incomplete valid state as `ready:migrate`; never write an unchanged Memory. In migrate mode, re-upsert an unchanged managed tiddler before deleting its source.
 - When `--tag <tag>` is present, filter exact matching tiddlers inside the TiddlyWiki worker before WikiText rendering. Only matching records enter scanning, terminal output, classification, conversion, or import. Normal safety classification still applies after this input filter.
-- Never write sync tags or fields to plan-only, skipped, conversion-failed, render-failed, or Memory-API-failed tiddlers. Before sync-state writeback, verify the raw source file against the apply scan snapshot; reject a concurrent edit instead of overwriting it. Never move or delete source tiddlers.
+- Never write sync tags or fields to plan-only, skipped, or Memory-API-failed tiddlers. Treat per-tiddler render errors and empty conversion results as non-blocking `skipped:render` and `skipped:conversion` outcomes. Never delete those tiddlers in migrate mode. Before sync-state writeback or deletion, verify the raw source file against the apply scan snapshot; reject a concurrent edit instead of overwriting or deleting it. Delete only standalone `application/x-tiddler` files or independently editable body files with an existing `.meta` sidecar; never delete shared or unsupported source formats.
 - Do not require the `nmem` CLI at runtime. Both `plan` and `apply` must work without it.
 - During `plan`, resolve the REST API URL in this order: `--api-url`, `NMEM_API_URL`, then `http://127.0.0.1:14242`, and store the resolved non-credential URL in the saved plan.
 - Check the selected service's `/health` endpoint directly before writing.
@@ -44,7 +44,7 @@ This file is the development and contribution contract for AI coding agents work
 - `src/cli.ts`: CLI orchestration, current-directory validation, terminal results, and concurrent imports.
 - `src/core.ts`: tiddler classification, metadata, stable IDs, HTML-to-Markdown conversion, and media warnings.
 - `src/tiddlywiki-worker.ts`: boots TiddlyWiki and sends records over IPC.
-- `src/tiddlywiki-sync-worker.ts`: boots TiddlyWiki after successful upserts and persists the source marker, Memory URI, and synchronization digest.
+- `src/tiddlywiki-sync-worker.ts`: boots TiddlyWiki after successful upserts and either persists sync state or deletes migrate-mode source tiddlers.
 - `src/tiddlywiki.ts`: owns read and sync worker lifecycles, IPC validation, and diagnostics.
 - `src/nmem.ts`: resolves and validates the selected service URL, checks REST health, and posts native Memory requests.
 - `src/options.ts`: parses supported command-line options.
@@ -67,7 +67,7 @@ This file is the development and contribution contract for AI coding agents work
 - Never include raw Nowledge Mem API response bodies in errors or terminal output.
 - Treat a Memory write as successful only when the native response contains `memory.id` matching the requested Memory ID. Malformed or mismatched success responses must not trigger source sync writeback.
 - Keep npm package metadata, CLI help, README commands, and tests synchronized with the package and executable names.
-- Keep `plan` as the default command and `apply` as the only command that mutates Nowledge Mem or source tiddlers. Do not restore the legacy `--apply` flag.
+- Keep `plan` as the default command and `apply` as the only command that mutates Nowledge Mem or source tiddlers. Keep `--mode sync|migrate` exclusive to `plan`, save it in the plan, and default it to `sync`. Do not restore the legacy `--apply` flag.
 - Present every user and agent workflow in Terraform order: run and review `plan [options]`, then run bare `apply`.
 - Keep all selection, identity, connection, and concurrency options exclusive to `plan`; reject them on `apply`.
 - Keep `--report` and `--preview-dir` unsupported. The CLI may create only `.tiddlynmem/plan.json`; it must not create report or converted-Markdown files.
@@ -84,13 +84,14 @@ Before any `apply` network request, load the saved plan, rescan and classify the
 
 The saved plan is an internal execution artifact, not a report. Write it atomically with owner-only permissions. Store the resolved options, package version, Wiki path fingerprint, Memory IDs, and SHA-256 content fingerprints. Never store tiddler bodies, source tags, API keys, or raw API responses in it. Starting a new `plan` must discard any previous saved plan so a failed plan cannot leave an older plan eligible for apply.
 
-Source synchronization writeback is a post-upsert phase. Collect only titles, canonical `nowledgemem://memory/<id>` URIs, self-describing payload-and-destination digests, and body-free source snapshot digests whose Memory REST request succeeded; send them over IPC instead of command-line arguments, and persist them serially through TiddlyWiki's file serializer. Immediately before each write, compare the raw source file with the apply scan snapshot; reject drift instead of saving a stale TiddlyWiki snapshot. The sync worker must treat already-current state as success to remain race-safe and must preserve source text and `modified`. Only rewrite regular `application/x-tiddler` files or independently editable files with an existing `.meta` sidecar; fail safely for shared or unsupported formats. A writeback failure must be visible in terminal output and produce an unsuccessful exit without misreporting the already completed Memory write.
+Source handling is a post-upsert phase. Collect only titles, canonical `nowledgemem://memory/<id>` URIs, self-describing payload-and-destination digests, and body-free source snapshot digests whose Memory REST request succeeded; send them over IPC instead of command-line arguments. In sync mode, persist state serially through TiddlyWiki's file serializer. In migrate mode, start deletion only when every planned Memory write succeeded, then delete sources serially. Immediately before each write or deletion, compare the raw source file with the apply scan snapshot; reject drift instead of saving a stale snapshot or deleting an edited source. The worker must preserve source text and `modified` during sync and treat already-current state as success. Only rewrite or delete regular `application/x-tiddler` files or independently editable files with an existing `.meta` sidecar; fail safely for shared or unsupported formats. A source-operation failure must be visible in terminal output and produce an unsuccessful exit without misreporting the already completed Memory write.
 
 Conversion behavior is type-dependent:
 
 - `text/vnd.tiddlywiki` and the empty/default type are rendered by TiddlyWiki before Turndown conversion.
 - `text/markdown` retains its source Markdown after media safety processing; `text/plain` uses its source text directly.
-- Unsupported binary types, system tiddlers, drafts, unchanged synced tiddlers, empty tiddlers, and sensitive-title tiddlers are classified and listed instead of upserted.
+- A per-tiddler rendering error or empty converted Markdown is listed and counted as `skipped:render` or `skipped:conversion`. It must not prevent a plan from being saved or unrelated planned Memories from being applied, and its source must be retained.
+- Unsupported binary types, system tiddlers, drafts, empty tiddlers, and sensitive-title tiddlers are classified and listed instead of upserted. Unchanged synced tiddlers are skipped only in sync mode; migrate mode re-upserts them before source deletion.
 
 Memory content is the converted Markdown body without importer front matter. Sanitize embedded data-URI images in inline Markdown images, full/collapsed/shortcut reference images, and raw HTML images with quoted or unquoted `src` attributes. Print preserved local image references as warnings. Map every source tag except the importer-owned `$:/NowledgeMem` marker to a native Memory label, and preserve Wiki identity, source Wiki, original title, those exact user tags, created time, and modified time in the native Memory `metadata` object. Use `source: "tiddlywiki"` and `source_app: "tiddlynmem"`. Nowledge Mem owns its lifecycle `created_at` and `updated_at`; do not misuse event dates as source-file timestamps.
 
@@ -128,6 +129,7 @@ Tests must cover behavior, not implementation details. Add or update tests when 
 - tag filtering before WikiText rendering
 - tiddler classification
 - WikiText/HTML/Markdown conversion
+- non-blocking per-tiddler render and conversion skips
 - deterministic IDs or metadata
 - default and explicit portable Wiki identities, including same-named Wiki directories
 - API URL precedence, direct service health checks, remote endpoint support, and REST request fields
@@ -135,7 +137,7 @@ Tests must cover behavior, not implementation details. Add or update tests when 
 - Markdown data-URI omission and local-media warnings
 - worker IPC and multiline content
 - worker credential isolation and apply preflight output
-- post-upsert source URI/digest writeback, legacy-marker migration, change detection, rename-stable updates, idempotence, concurrent-edit rejection, and source-text/modified preservation
+- post-upsert source URI/digest writeback, migrate-mode deletion, API-failure deletion deferral, standalone and sidecar file deletion, shared-file refusal, legacy-marker migration, change detection, rename-stable updates, idempotence, concurrent-edit rejection, and source-text/modified preservation
 - npm package name, executable mapping, and packed CLI startup
 
 Every GitHub Actions `uses:` reference must be pinned to a full commit SHA with the readable action version in an inline comment.

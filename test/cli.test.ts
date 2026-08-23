@@ -68,10 +68,240 @@ test("help omits removed compatibility and file-output options", async () => {
   assert.doesNotMatch(result.stdout, /allow-remote/u);
   assert.doesNotMatch(result.stdout, /--report/u);
   assert.doesNotMatch(result.stdout, /--preview-dir/u);
+  assert.match(result.stdout, /--mode <mode>[^\n]*sync or migrate/u);
   assert.match(
     result.stdout,
     /Plan options:[\s\S]*--api-url <url>[^\n]*\n\nGlobal options:\n  -h, --help[^\n]*\n  -V, --version/u,
   );
+});
+
+test("migrate mode deletes a tiddler only after a confirmed Memory write", async (t) => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "tiddlynmem-cli-test-"));
+  const wikiPath = resolve(temporaryRoot, "wiki");
+  const fixture = fileURLToPath(new URL("./fixtures/wiki", import.meta.url));
+  const cliPath = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+  const tiddlerPath = resolve(wikiPath, "tiddlers", "Multiline.tid");
+  const conversionFailurePath = resolve(
+    wikiPath,
+    "tiddlers",
+    "Conversion failure.tid",
+  );
+  const renderFailurePath = resolve(wikiPath, "tiddlers", "Render failure.tid");
+  const renderFailureWidgetPath = resolve(
+    wikiPath,
+    "tiddlers",
+    "Render failure widget.tid",
+  );
+  let acceptMemory = false;
+  let memoryRequests = 0;
+  const server = createServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/health") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end('{"services_ready":true,"status":"ok"}');
+      return;
+    }
+    request.setEncoding("utf8");
+    let body = "";
+    for await (const chunk of request) {
+      body += chunk;
+    }
+    const memoryRequest = JSON.parse(body) as { id: string };
+    memoryRequests += 1;
+    response.writeHead(acceptMemory ? 200 : 422, {
+      "Content-Type": "application/json",
+    });
+    response.end(
+      acceptMemory
+        ? JSON.stringify({ memory: { id: memoryRequest.id } })
+        : '{"detail":"rejected"}',
+    );
+  });
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const serverAddress = server.address();
+  assert.ok(serverAddress && typeof serverAddress !== "string");
+  const apiUrl = `http://127.0.0.1:${serverAddress.port}`;
+  await cp(fixture, wikiPath, { recursive: true });
+  await writeFile(
+    conversionFailurePath,
+    [
+      "title: Conversion failure",
+      "tags: [[long tag]]",
+      "type: text/vnd.tiddlywiki",
+      "",
+      "<!-- intentionally empty after rendering -->",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await writeFile(
+    renderFailureWidgetPath,
+    [
+      "title: $:/plugins/tiddlynmem-test/render-failure-widget.js",
+      "type: application/javascript",
+      "module-type: widget",
+      "",
+      '"use strict";',
+      'const Widget = require("$:/core/modules/widgets/widget.js").widget;',
+      "function RenderFailureWidget(parseTreeNode, options) {",
+      "  this.initialise(parseTreeNode, options);",
+      "}",
+      "RenderFailureWidget.prototype = new Widget();",
+      "RenderFailureWidget.prototype.render = function () {",
+      '  throw new Error("Intentional render failure.");',
+      "};",
+      'exports["render-failure"] = RenderFailureWidget;',
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await writeFile(
+    renderFailurePath,
+    [
+      "title: Render failure",
+      "tags: [[long tag]]",
+      "type: text/vnd.tiddlywiki",
+      "",
+      "<$render-failure/>",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  t.after(async () => {
+    await new Promise<void>((resolveClose, reject) => {
+      server.close((error) => (error ? reject(error) : resolveClose()));
+    });
+    await rm(temporaryRoot, { force: true, recursive: true });
+  });
+
+  const planResult = await run(
+    "nub",
+    [
+      cliPath,
+      "plan",
+      "--mode",
+      "migrate",
+      "--api-url",
+      apiUrl,
+      "--tag",
+      "long tag",
+    ],
+    { cwd: wikiPath, env: process.env },
+  );
+
+  assert.equal(planResult.code, 0, planResult.stderr);
+  assert.match(planResult.stdout, /Source mode: migrate/u);
+  assert.match(planResult.stdout, /\[skipped:conversion\] Conversion failure/u);
+  assert.match(planResult.stdout, /\[skipped:render\] Render failure/u);
+  assert.match(planResult.stdout, /Skipped: 2 \(conversion: 1, render: 1\)/u);
+  assert.match(planResult.stdout, /Failed: 0/u);
+  const savedPlanPath = resolve(wikiPath, ".tiddlynmem", "plan.json");
+  const savedPlan = JSON.parse(await readFile(savedPlanPath, "utf8")) as {
+    options: { mode: string };
+  };
+  assert.equal(savedPlan.options.mode, "migrate");
+
+  const failedApply = await run("nub", [cliPath, "apply"], {
+    cwd: wikiPath,
+    env: process.env,
+  });
+  assert.equal(failedApply.code, 1);
+  assert.match(failedApply.stdout, /\[failed:import\] Multiline/u);
+  await access(tiddlerPath);
+  await access(conversionFailurePath);
+  await access(renderFailurePath);
+  await access(savedPlanPath);
+
+  acceptMemory = true;
+  const successfulApply = await run("nub", [cliPath, "apply"], {
+    cwd: wikiPath,
+    env: process.env,
+  });
+  assert.equal(successfulApply.code, 0, successfulApply.stderr);
+  assert.match(successfulApply.stdout, /Source mode: migrate/u);
+  assert.match(successfulApply.stdout, /\[imported:create\] Multiline/u);
+  assert.match(successfulApply.stdout, /Source deletion: deleted/u);
+  assert.match(successfulApply.stdout, /Deleted: 1/u);
+  assert.equal(memoryRequests, 2);
+  await assert.rejects(access(tiddlerPath));
+  await access(conversionFailurePath);
+  await access(renderFailurePath);
+  await assert.rejects(access(savedPlanPath));
+});
+
+test("migrate mode keeps a changed source and its saved plan after deletion fails", async (t) => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "tiddlynmem-cli-test-"));
+  const wikiPath = resolve(temporaryRoot, "wiki");
+  const fixture = fileURLToPath(new URL("./fixtures/wiki", import.meta.url));
+  const cliPath = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+  const tiddlerPath = resolve(wikiPath, "tiddlers", "Multiline.tid");
+  const server = createServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/health") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end('{"services_ready":true,"status":"ok"}');
+      return;
+    }
+    request.setEncoding("utf8");
+    let body = "";
+    for await (const chunk of request) {
+      body += chunk;
+    }
+    const memoryRequest = JSON.parse(body) as { id: string };
+    await writeFile(
+      tiddlerPath,
+      (await readFile(tiddlerPath, "utf8")).replace(
+        "First line.",
+        "Concurrent edit.",
+      ),
+      "utf8",
+    );
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ memory: { id: memoryRequest.id } }));
+  });
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const serverAddress = server.address();
+  assert.ok(serverAddress && typeof serverAddress !== "string");
+  const apiUrl = `http://127.0.0.1:${serverAddress.port}`;
+  await cp(fixture, wikiPath, { recursive: true });
+  t.after(async () => {
+    await new Promise<void>((resolveClose, reject) => {
+      server.close((error) => (error ? reject(error) : resolveClose()));
+    });
+    await rm(temporaryRoot, { force: true, recursive: true });
+  });
+
+  const planResult = await run(
+    "nub",
+    [
+      cliPath,
+      "plan",
+      "--mode",
+      "migrate",
+      "--api-url",
+      apiUrl,
+      "--tag",
+      "long tag",
+    ],
+    { cwd: wikiPath, env: process.env },
+  );
+  assert.equal(planResult.code, 0, planResult.stderr);
+
+  const applyResult = await run("nub", [cliPath, "apply"], {
+    cwd: wikiPath,
+    env: process.env,
+  });
+
+  assert.equal(applyResult.code, 1);
+  assert.match(applyResult.stdout, /\[imported:delete-failed\] Multiline/u);
+  assert.match(applyResult.stdout, /Source deletion: failed/u);
+  assert.match(applyResult.stdout, /source file changed after apply scanning/iu);
+  assert.match(await readFile(tiddlerPath, "utf8"), /Concurrent edit\./u);
+  await access(resolve(wikiPath, ".tiddlynmem", "plan.json"));
 });
 
 test("apply records sync state and updates a changed tiddler", async (t) => {
@@ -465,6 +695,34 @@ test("apply records sync state and updates a changed tiddler", async (t) => {
   );
   assert.ok(updatedRecord);
   assert.equal(updatedRecord.nmemUri, memoryUri(importedMemoryId));
+
+  const finalMigrationPlan = await run(
+    "nub",
+    [
+      cliPath,
+      "plan",
+      "--mode",
+      "migrate",
+      "--api-url",
+      apiUrl,
+      "--tag",
+      "long tag",
+      "--wiki-id",
+      "fixture-wiki",
+    ],
+    { cwd: wikiPath, env: process.env },
+  );
+  assert.equal(finalMigrationPlan.code, 0, finalMigrationPlan.stderr);
+  assert.match(finalMigrationPlan.stdout, /\[ready:update\] Renamed/u);
+
+  const finalMigrationApply = await run("nub", [cliPath, "apply"], {
+    cwd: wikiPath,
+    env: process.env,
+  });
+  assert.equal(finalMigrationApply.code, 0, finalMigrationApply.stderr);
+  assert.match(finalMigrationApply.stdout, /Source deletion: deleted/u);
+  assert.equal(memoryRequests.length, 6);
+  await assert.rejects(access(tiddlerPath));
 });
 
 test("apply retries only pending Memories after a partial success", async (t) => {
@@ -556,6 +814,102 @@ test("apply retries only pending Memories after a partial success", async (t) =>
   assert.match(secondApply.stdout, /\[skipped:unchanged\] First/u);
   assert.match(secondApply.stdout, /\[imported:create\] Second/u);
   assert.deepEqual(requestedTitles.slice(requestsBeforeRetry), ["Second"]);
+  await assert.rejects(
+    access(resolve(wikiPath, ".tiddlynmem", "plan.json")),
+  );
+});
+
+test("migrate mode defers deletion until every planned Memory write succeeds", async (t) => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "tiddlynmem-cli-test-"));
+  const wikiPath = resolve(temporaryRoot, "wiki");
+  const fixture = fileURLToPath(new URL("./fixtures/wiki", import.meta.url));
+  const cliPath = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+  let failSecond = true;
+  const server = createServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/health") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end('{"services_ready":true,"status":"ok"}');
+      return;
+    }
+    request.setEncoding("utf8");
+    let body = "";
+    for await (const chunk of request) {
+      body += chunk;
+    }
+    const memoryRequest = JSON.parse(body) as { id: string; title: string };
+    const failed = failSecond && memoryRequest.title === "Second";
+    response.writeHead(failed ? 422 : 200, {
+      "Content-Type": "application/json",
+    });
+    response.end(
+      failed
+        ? '{"detail":"rejected"}'
+        : JSON.stringify({ memory: { id: memoryRequest.id } }),
+    );
+  });
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const serverAddress = server.address();
+  assert.ok(serverAddress && typeof serverAddress !== "string");
+  const apiUrl = `http://127.0.0.1:${serverAddress.port}`;
+  await cp(fixture, wikiPath, { recursive: true });
+  const paths = ["First", "Second"].map((title) =>
+    resolve(wikiPath, "tiddlers", `${title}.tid`),
+  );
+  await Promise.all(
+    paths.map((path, index) => {
+      const title = index === 0 ? "First" : "Second";
+      return writeFile(
+        path,
+        `title: ${title}\ntags: BatchMigrate\ntype: text/plain\n\n${title} body.\n`,
+        "utf8",
+      );
+    }),
+  );
+  t.after(async () => {
+    await new Promise<void>((resolveClose, reject) => {
+      server.close((error) => (error ? reject(error) : resolveClose()));
+    });
+    await rm(temporaryRoot, { force: true, recursive: true });
+  });
+
+  const planResult = await run(
+    "nub",
+    [
+      cliPath,
+      "plan",
+      "--mode",
+      "migrate",
+      "--api-url",
+      apiUrl,
+      "--jobs",
+      "1",
+      "--tag",
+      "BatchMigrate",
+    ],
+    { cwd: wikiPath, env: process.env },
+  );
+  assert.equal(planResult.code, 0, planResult.stderr);
+
+  const firstApply = await run("nub", [cliPath, "apply"], {
+    cwd: wikiPath,
+    env: process.env,
+  });
+  assert.equal(firstApply.code, 1);
+  assert.match(firstApply.stdout, /Source deletion deferred/u);
+  await Promise.all(paths.map((path) => access(path)));
+  await access(resolve(wikiPath, ".tiddlynmem", "plan.json"));
+
+  failSecond = false;
+  const secondApply = await run("nub", [cliPath, "apply"], {
+    cwd: wikiPath,
+    env: process.env,
+  });
+  assert.equal(secondApply.code, 0, secondApply.stderr);
+  assert.match(secondApply.stdout, /Deleted: 2/u);
+  await Promise.all(paths.map((path) => assert.rejects(access(path))));
   await assert.rejects(
     access(resolve(wikiPath, ".tiddlynmem", "plan.json")),
   );

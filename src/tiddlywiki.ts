@@ -38,9 +38,20 @@ export interface TiddlerSyncRecord {
   uri: string;
 }
 
+export interface TiddlerDeleteRecord {
+  sourceFileDigest: string;
+  title: string;
+}
+
 export interface TiddlerSyncResult {
   error?: string;
   status: "already-current" | "failed" | "written";
+  title: string;
+}
+
+export interface TiddlerDeleteResult {
+  error?: string;
+  status: "deleted" | "failed";
   title: string;
 }
 
@@ -52,7 +63,10 @@ export function tiddlyWikiWorkerEnvironment(
   return sanitized;
 }
 
-interface SyncWorkerMessage extends Partial<TiddlerSyncResult> {
+interface SourceWorkerMessage {
+  error?: string;
+  status?: "already-current" | "deleted" | "failed" | "written";
+  title?: string;
   type: "done" | "ready" | "result";
 }
 
@@ -65,7 +79,7 @@ function isWorkerMessage(message: unknown): message is WorkerMessage {
   );
 }
 
-function isSyncWorkerMessage(message: unknown): message is SyncWorkerMessage {
+function isSourceWorkerMessage(message: unknown): message is SourceWorkerMessage {
   return (
     typeof message === "object" &&
     message !== null &&
@@ -156,21 +170,22 @@ export function loadWiki(
   });
 }
 
-export function recordWikiSync(
+async function runSourceWorker(
   wikiPath: string,
-  records: TiddlerSyncRecord[],
-  tag = NOWLEDGE_MEM_TAG,
-): Promise<TiddlerSyncResult[]> {
-  if (records.length === 0) {
+  request:
+    | { records: TiddlerDeleteRecord[]; type: "delete" }
+    | { records: TiddlerSyncRecord[]; tag: string; type: "sync" },
+): Promise<SourceWorkerMessage[]> {
+  if (request.records.length === 0) {
     return Promise.resolve([]);
   }
 
-  return new Promise<TiddlerSyncResult[]>((resolve, reject) => {
+  return new Promise<SourceWorkerMessage[]>((resolve, reject) => {
     const child = fork(syncWorkerPath, [wikiPath], {
       env: tiddlyWikiWorkerEnvironment(),
       stdio: ["ignore", "ignore", "pipe", "ipc"],
     });
-    const results: TiddlerSyncResult[] = [];
+    const results: SourceWorkerMessage[] = [];
     let stderr = "";
     let completed = false;
     let settled = false;
@@ -184,13 +199,13 @@ export function recordWikiSync(
       child.kill("SIGKILL");
       reject(error);
     };
-    const succeed = (syncResults: TiddlerSyncResult[]): void => {
+    const succeed = (sourceResults: SourceWorkerMessage[]): void => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timer);
-      resolve(syncResults);
+      resolve(sourceResults);
     };
     timer = setTimeout(() => {
       fail(
@@ -201,15 +216,16 @@ export function recordWikiSync(
     }, WIKI_WORKER_TIMEOUT_MS);
 
     child.on("message", (message) => {
-      if (!isSyncWorkerMessage(message)) {
+      if (!isSourceWorkerMessage(message)) {
         return;
       }
       if (message.type === "ready") {
-        child.send({ records, tag, type: "sync" });
+        child.send(request);
       } else if (
         message.type === "result" &&
         typeof message.title === "string" &&
         (message.status === "already-current" ||
+          message.status === "deleted" ||
           message.status === "failed" ||
           message.status === "written")
       ) {
@@ -219,6 +235,7 @@ export function recordWikiSync(
             : {}),
           status: message.status,
           title: message.title,
+          type: "result",
         });
       } else if (message.type === "done") {
         completed = true;
@@ -234,7 +251,11 @@ export function recordWikiSync(
     });
     child.on("error", (error) => fail(error));
     child.on("close", (code) => {
-      if (code === 0 && completed && results.length === records.length) {
+      if (
+        code === 0 &&
+        completed &&
+        results.length === request.records.length
+      ) {
         succeed(results);
       } else {
         fail(
@@ -244,5 +265,55 @@ export function recordWikiSync(
         );
       }
     });
+  });
+}
+
+export async function recordWikiSync(
+  wikiPath: string,
+  records: TiddlerSyncRecord[],
+  tag = NOWLEDGE_MEM_TAG,
+): Promise<TiddlerSyncResult[]> {
+  const results = await runSourceWorker(wikiPath, {
+    records,
+    tag,
+    type: "sync",
+  });
+  return results.map((result) => {
+    if (
+      typeof result.title !== "string" ||
+      (result.status !== "already-current" &&
+        result.status !== "failed" &&
+        result.status !== "written")
+    ) {
+      throw new Error("The TiddlyWiki sync worker returned an invalid result.");
+    }
+    return {
+      ...(typeof result.error === "string" ? { error: result.error } : {}),
+      status: result.status,
+      title: result.title,
+    };
+  });
+}
+
+export async function deleteWikiTiddlers(
+  wikiPath: string,
+  records: TiddlerDeleteRecord[],
+): Promise<TiddlerDeleteResult[]> {
+  const results = await runSourceWorker(wikiPath, {
+    records,
+    type: "delete",
+  });
+  return results.map((result) => {
+    if (
+      typeof result.title !== "string" ||
+      (result.status !== "deleted" && result.status !== "failed")
+    ) {
+      throw new Error("The TiddlyWiki delete worker returned an invalid result.");
+    }
+    return {
+      ...(typeof result.error === "string" ? { error: result.error } : {}),
+      status: result.status,
+      title: result.title,
+    };
   });
 }

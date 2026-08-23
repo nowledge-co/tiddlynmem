@@ -29,6 +29,7 @@ const options: ImportOptions = {
   includeSensitive: false,
   jobs: 2,
   limit: 10,
+  mode: "migrate",
   spaceId: "personal",
   tag: "Project Alpha",
   wikiId: "personal-notes",
