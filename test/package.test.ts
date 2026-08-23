@@ -28,7 +28,7 @@ test("package builds and exposes the generated tiddlynmem CLI", async () => {
   ) as PackageJson;
 
   assert.equal(packageJson.name, "tiddlynmem");
-  assert.equal(packageJson.version, "0.1.0");
+  assert.equal(packageJson.version, "0.2.0");
   assert.deepEqual(packageJson.author, {
     email: "thaddeusjiang@gmail.com",
     name: "Thaddeus Jiang",

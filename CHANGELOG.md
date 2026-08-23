@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-23
+
 ### Added
 
 - Added one-way incremental synchronization from TiddlyWiki to Nowledge Mem. Successful upserts now write `nmem-uri` and a self-describing `nmem-digest: sha256:<hex>` alongside `$:/NowledgeMem`.
@@ -49,5 +51,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Escaped terminal control characters in tiddler-derived output and diagnostics.
 - Added skipped totals and reason counts to terminal summaries.
 
-[Unreleased]: https://github.com/ThaddeusJiang/tiddlynmem/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/ThaddeusJiang/tiddlynmem/releases/tag/v0.1.0
+[Unreleased]: https://github.com/nowledge-co/tiddlynmem/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/nowledge-co/tiddlynmem/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/nowledge-co/tiddlynmem/releases/tag/v0.1.0
