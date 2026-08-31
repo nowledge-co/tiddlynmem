@@ -5,7 +5,7 @@
 [![Node.js](https://img.shields.io/node/v/tiddlynmem.svg)](https://www.npmjs.com/package/tiddlynmem)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Import TiddlyWiki tiddlers into [Nowledge Mem](https://mem.nowledge.co/) as AI memories.
+Import TiddlyWiki tiddlers into [Nowledge Mem](https://mem.nowledge.co/) as AI memories. The optional [`tw-nowledge`](https://github.com/ThaddeusJiang/tw-nowledge) submodule provides the independent browser plugin for per-tiddler bidirectional synchronization.
 
 ## Agent Usage
 
@@ -113,6 +113,29 @@ npx tiddlynmem plan
 
 Existing tiddlers that have only the historical `$:/NowledgeMem` marker are migrated by an idempotent upsert during the next reviewed plan and apply. Use the same API URL, `--space-id`, and `--wiki-id` that created the original Memories; the original `--wiki-id` is required if the Wiki moved or the first import used an explicit override. Selecting another API URL or space intentionally produces update actions because the synchronization destination changed.
 
+## Bidirectional TiddlyWiki plugin
+
+The importer CLI and browser plugin are independent. Use either one by itself or both together:
+
+- `tiddlynmem` scans a Node.js Wiki through a reviewed `plan` and bare `apply` workflow.
+- `tw-nowledge` places a Mem button on every saved user tiddler and synchronizes only tiddlers currently open in `$:/StoryList`.
+
+The plugin supports unlinked create, unchanged no-op, TiddlyWiki-only push, Nowledge Mem-only pull, and explicit two-sided conflict states. It preserves Markdown as Markdown and converts pulled Markdown back to WikiText through the community [`$:/plugins/linonetwo/markdown-transformer`](https://github.com/tiddly-gittly/markdown-transformer) plugin.
+
+Initialize and build the submodule:
+
+```bash
+git submodule update --init --recursive
+cd tw-nowledge
+ni
+nr typecheck
+nr test
+nr build
+nr check:plugin
+```
+
+See the [tw-nowledge README](https://github.com/ThaddeusJiang/tw-nowledge#readme) for installation, configuration, state meanings, `nr dev` development, and the required Node.js plus standalone HTML acceptance paths.
+
 ## Troubleshooting
 
 `Current directory is not a TiddlyWiki root` means the current directory does not contain a readable `tiddlywiki.info`.
@@ -132,7 +155,7 @@ For `imported:delete-failed`, the Memory was created or updated but migrate mode
 ## Development
 
 ```bash
-git clone https://github.com/nowledge-co/tiddlynmem.git
+git clone --recurse-submodules https://github.com/nowledge-co/tiddlynmem.git
 cd tiddlynmem
 mise trust && mise install
 npm ci
@@ -148,7 +171,7 @@ See [AGENTS.md](AGENTS.md) for development and contribution guidance.
 
 ## Acknowledgements
 
-Thanks to [TiddlyWiki](https://tiddlywiki.com/), [Turndown](https://github.com/mixmark-io/turndown), [Nub](https://github.com/nubjs/nub), and [Nowledge Mem](https://mem.nowledge.co/).
+Thanks to [TiddlyWiki](https://tiddlywiki.com/), [Markdown Transformer](https://github.com/tiddly-gittly/markdown-transformer), [Turndown](https://github.com/mixmark-io/turndown), [Nub](https://github.com/nubjs/nub), and [Nowledge Mem](https://mem.nowledge.co/).
 
 ## Author
 

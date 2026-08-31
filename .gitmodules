@@ -1,0 +1,3 @@
+[submodule "tw-nowledge"]
+	path = tw-nowledge
+	url = https://github.com/ThaddeusJiang/tw-nowledge.git

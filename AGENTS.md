@@ -6,6 +6,8 @@ This file is the development and contribution contract for AI coding agents work
 
 `tiddlynmem` imports tiddlers from one Node.js TiddlyWiki into Nowledge Mem. It boots the real Wiki with the npm `tiddlywiki` package, renders WikiText to HTML, converts that HTML to GitHub Flavored Markdown, and upserts each result through the selected Nowledge Mem REST API.
 
+The independent `tw-nowledge/` Git submodule owns the optional browser-side bidirectional synchronization plugin. The importer must not bundle or require that plugin, and the plugin must remain usable without the importer CLI. Their shared compatibility surface is the Memory request, deterministic identity, `$:/NowledgeMem`, `nmem-uri`, and `nmem-digest` protocol.
+
 `README.md` is the user-facing source of truth for installation and usage. Keep it synchronized whenever CLI behavior changes.
 
 ## Non-negotiable behavior
@@ -51,6 +53,7 @@ This file is the development and contribution contract for AI coding agents work
 - `src/plan.ts`: atomically saves, validates, fingerprints, and consumes the local execution plan.
 - `scripts/build-package.ts`: compiles the npm package and changes only the generated CLI shebang from Nub to Node.
 - `test/`: Node test runner coverage and a minimal TiddlyWiki fixture.
+- `tw-nowledge/`: Git submodule containing the standalone bidirectional TiddlyWiki plugin; follow its own `AGENTS.md` for plugin work.
 - `dist/`: generated npm package output; ignored, never edited, and never committed.
 
 ## npm CLI contract
